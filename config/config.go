@@ -49,6 +49,24 @@ type Config struct {
 	// 第三方
 	GoogleClientID string
 
+	// Database (PostgreSQL for user management)
+	DatabaseURL             string
+	DatabaseMaxOpenConns    int
+	DatabaseMaxIdleConns    int
+	DatabaseConnMaxLifetime time.Duration
+
+	// Admin Account
+	AdminUsername string
+	AdminPassword string
+	AdminEmail    string
+
+	// JWT Configuration
+	JWTSecret      string
+	JWTIssuer      string
+	JWTAudience    string
+	TokenDuration  int // seconds
+	CookieDuration int // seconds
+
 	// 日志
 	LogLevel  string
 	LogFormat string
@@ -97,6 +115,24 @@ func Load() error {
 
 		// 第三方
 		GoogleClientID: getEnv("GOOGLE_CLIENT_ID", ""),
+
+		// Database (PostgreSQL for user management)
+		DatabaseURL:             getEnv("DATABASE_URL", ""),
+		DatabaseMaxOpenConns:    getEnvInt("DATABASE_MAX_OPEN_CONNS", 25),
+		DatabaseMaxIdleConns:    getEnvInt("DATABASE_MAX_IDLE_CONNS", 5),
+		DatabaseConnMaxLifetime: time.Duration(getEnvInt("DATABASE_CONN_MAX_LIFETIME", 300)) * time.Second,
+
+		// Admin Account
+		AdminUsername: getEnv("ADMIN_USERNAME", "admin"),
+		AdminPassword: getEnv("ADMIN_PASSWORD", ""),
+		AdminEmail:    getEnv("ADMIN_EMAIL", "admin@example.com"),
+
+		// JWT Configuration
+		JWTSecret:      getEnv("JWT_SECRET", ""),
+		JWTIssuer:      getEnv("JWT_ISSUER", "extension-backend"),
+		JWTAudience:    getEnv("JWT_AUDIENCE", "extension-users"),
+		TokenDuration:  getEnvInt("TOKEN_DURATION", 3600),
+		CookieDuration: getEnvInt("COOKIE_DURATION", 2592000),
 
 		// 日志
 		LogLevel:  getEnv("LOG_LEVEL", "info"),
