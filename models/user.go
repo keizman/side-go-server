@@ -28,7 +28,7 @@ type RegisterRequest struct {
 	Username        string `json:"username" binding:"required,min=3,max=50"`
 	Password        string `json:"password" binding:"required,min=8,max=100"`
 	ConfirmPassword string `json:"confirm_password" binding:"required,eqfield=Password"`
-	Email           string `json:"email" binding:"required,email"`
+	Email           string `json:"email" binding:"required"`
 }
 
 type LoginRequest struct {
