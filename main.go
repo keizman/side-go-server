@@ -90,6 +90,10 @@ func main() {
 
 	switch mode {
 	case "AUTH":
+		if err := authHandlers.InitExtensionWhitelist(); err != nil {
+			log.Fatalf("Failed to initialize extension whitelist: %v", err)
+		}
+
 		r.POST("/auth_token", authHandlers.AuthToken)
 		r.GET("/check_token", authHandlers.CheckToken)
 

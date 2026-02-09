@@ -39,8 +39,13 @@ func setupAuthEnv(t *testing.T, mutate func(*config.Config)) *miniredis.Miniredi
 		mutate(cfg)
 	}
 	config.Cfg = cfg
+	resetAllowedExtensionsCache()
+	oldInterval := allowedExtensionsReloadInterval
+	allowedExtensionsReloadInterval = 10 * time.Second
 
 	t.Cleanup(func() {
+		allowedExtensionsReloadInterval = oldInterval
+		resetAllowedExtensionsCache()
 		_ = redisClient.Client.Close()
 	})
 
@@ -128,7 +133,7 @@ func TestAuthToken(t *testing.T) {
 	t.Run("Given timestamp expired When requesting token Then returns 401", func(t *testing.T) {
 		setupAuthEnv(t, nil)
 
-		timestamp := fmt.Sprintf("%d", time.Now().Add(-2*time.Minute).Unix())
+		timestamp := fmt.Sprintf("%d", time.Now().Add(-10*time.Minute).Unix())
 		w := runGinHandler(AuthToken, http.MethodPost, "/auth_token", map[string]string{
 			"x-temp-id":      "tmp-1",
 			"x-extension-id": "ext-good",
@@ -138,6 +143,24 @@ func TestAuthToken(t *testing.T) {
 
 		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("expected 401, got %d", w.Code)
+		}
+	})
+
+	t.Run("Given timestamp is within configured tolerance When requesting token Then returns 200", func(t *testing.T) {
+		setupAuthEnv(t, func(cfg *config.Config) {
+			cfg.TimestampTolerance = 10 * time.Minute
+		})
+
+		timestamp := fmt.Sprintf("%d", time.Now().Add(-2*time.Minute).Unix())
+		w := runGinHandler(AuthToken, http.MethodPost, "/auth_token", map[string]string{
+			"x-temp-id":      "tmp-1",
+			"x-extension-id": "ext-good",
+			"x-timestamp":    timestamp,
+			"x-init-salt":    validInitSalt("ext-good", timestamp),
+		})
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
 		}
 	})
 
@@ -282,6 +305,34 @@ func TestAuthToken(t *testing.T) {
 			t.Fatalf("expected 401, got %d", w.Code)
 		}
 	})
+
+	t.Run("Given auth request rate exceeds limit When requesting token repeatedly Then returns 429", func(t *testing.T) {
+		setupAuthEnv(t, func(cfg *config.Config) {
+			cfg.LimitAuthRPM = 1
+		})
+
+		ts1 := fmt.Sprintf("%d", time.Now().Unix())
+		first := runGinHandler(AuthToken, http.MethodPost, "/auth_token", map[string]string{
+			"x-temp-id":      "tmp-limit-1",
+			"x-extension-id": "ext-good",
+			"x-timestamp":    ts1,
+			"x-init-salt":    validInitSalt("ext-good", ts1),
+		})
+		if first.Code != http.StatusOK {
+			t.Fatalf("expected first request 200, got %d", first.Code)
+		}
+
+		ts2 := fmt.Sprintf("%d", time.Now().Unix())
+		second := runGinHandler(AuthToken, http.MethodPost, "/auth_token", map[string]string{
+			"x-temp-id":      "tmp-limit-2",
+			"x-extension-id": "ext-good",
+			"x-timestamp":    ts2,
+			"x-init-salt":    validInitSalt("ext-good", ts2),
+		})
+		if second.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected second request 429, got %d", second.Code)
+		}
+	})
 }
 
 func TestCheckToken(t *testing.T) {
@@ -312,10 +363,11 @@ func TestCheckToken(t *testing.T) {
 		token := seedTokenInRedis(t, "user-a", "user", "dev-1", time.Now().Add(1*time.Minute).Unix())
 
 		w := runGinHandler(CheckToken, http.MethodGet, "/check_token", map[string]string{
-			"Authorization": "Bearer " + token,
-			"x-temp-id":     "dev-1",
-			"x-timestamp":   fmt.Sprintf("%d", time.Now().Unix()),
-			"x-nonce":       "nonce-1",
+			"Authorization":  "Bearer " + token,
+			"x-temp-id":      "dev-1",
+			"x-timestamp":    fmt.Sprintf("%d", time.Now().Unix()),
+			"x-nonce":        "nonce-1",
+			"x-extension-id": "ext-good",
 		})
 
 		if w.Code != http.StatusOK {
@@ -331,10 +383,11 @@ func TestCheckToken(t *testing.T) {
 		token := seedTokenInRedis(t, "user-a", "user", "dev-1", time.Now().Add(1*time.Minute).Unix())
 
 		w := runGinHandler(CheckToken, http.MethodGet, "/check_token", map[string]string{
-			"Authorization": "Bearer " + token,
-			"x-temp-id":     "dev-1",
-			"x-timestamp":   fmt.Sprintf("%d", time.Now().Add(-10*time.Minute).Unix()),
-			"x-nonce":       "nonce-1",
+			"Authorization":  "Bearer " + token,
+			"x-temp-id":      "dev-1",
+			"x-timestamp":    fmt.Sprintf("%d", time.Now().Add(-10*time.Minute).Unix()),
+			"x-nonce":        "nonce-1",
+			"x-extension-id": "ext-good",
 		})
 
 		if w.Code != http.StatusUnauthorized {
@@ -347,10 +400,11 @@ func TestCheckToken(t *testing.T) {
 		token := seedTokenInRedis(t, "user-a", "user", "dev-1", time.Now().Add(1*time.Minute).Unix())
 
 		w := runGinHandler(CheckToken, http.MethodGet, "/check_token", map[string]string{
-			"Authorization": "Bearer " + token,
-			"x-temp-id":     "dev-2",
-			"x-timestamp":   fmt.Sprintf("%d", time.Now().Unix()),
-			"x-nonce":       "nonce-1",
+			"Authorization":  "Bearer " + token,
+			"x-temp-id":      "dev-2",
+			"x-timestamp":    fmt.Sprintf("%d", time.Now().Unix()),
+			"x-nonce":        "nonce-1",
+			"x-extension-id": "ext-good",
 		})
 
 		if w.Code != http.StatusUnauthorized {
@@ -372,10 +426,11 @@ func TestCheckToken(t *testing.T) {
 		}
 
 		w := runGinHandler(CheckToken, http.MethodGet, "/check_token", map[string]string{
-			"Authorization": "Bearer " + token,
-			"x-temp-id":     "dev-1",
-			"x-timestamp":   fmt.Sprintf("%d", time.Now().Unix()),
-			"x-nonce":       "nonce-1",
+			"Authorization":  "Bearer " + token,
+			"x-temp-id":      "dev-1",
+			"x-timestamp":    fmt.Sprintf("%d", time.Now().Unix()),
+			"x-nonce":        "nonce-1",
+			"x-extension-id": "ext-good",
 		})
 
 		if w.Code != http.StatusUnauthorized {
@@ -388,10 +443,11 @@ func TestCheckToken(t *testing.T) {
 		token := seedTokenInRedis(t, "user-a", "user", "dev-1", time.Now().Add(1*time.Minute).Unix())
 
 		headers := map[string]string{
-			"Authorization": "Bearer " + token,
-			"x-temp-id":     "dev-1",
-			"x-timestamp":   fmt.Sprintf("%d", time.Now().Unix()),
-			"x-nonce":       "nonce-replay",
+			"Authorization":  "Bearer " + token,
+			"x-temp-id":      "dev-1",
+			"x-timestamp":    fmt.Sprintf("%d", time.Now().Unix()),
+			"x-nonce":        "nonce-replay",
+			"x-extension-id": "ext-good",
 		}
 		first := runGinHandler(CheckToken, http.MethodGet, "/check_token", headers)
 		if first.Code != http.StatusOK {
@@ -411,23 +467,42 @@ func TestCheckToken(t *testing.T) {
 		token := seedTokenInRedis(t, "guest-1", "guest", "dev-guest", time.Now().Add(1*time.Minute).Unix())
 
 		first := runGinHandler(CheckToken, http.MethodGet, "/check_token", map[string]string{
-			"Authorization": "Bearer " + token,
-			"x-temp-id":     "dev-guest",
-			"x-timestamp":   fmt.Sprintf("%d", time.Now().Unix()),
-			"x-nonce":       "nonce-a",
+			"Authorization":  "Bearer " + token,
+			"x-temp-id":      "dev-guest",
+			"x-timestamp":    fmt.Sprintf("%d", time.Now().Unix()),
+			"x-nonce":        "nonce-a",
+			"x-extension-id": "ext-good",
 		})
 		if first.Code != http.StatusOK {
 			t.Fatalf("expected first check 200, got %d", first.Code)
 		}
 
 		second := runGinHandler(CheckToken, http.MethodGet, "/check_token", map[string]string{
-			"Authorization": "Bearer " + token,
-			"x-temp-id":     "dev-guest",
-			"x-timestamp":   fmt.Sprintf("%d", time.Now().Unix()),
-			"x-nonce":       "nonce-b",
+			"Authorization":  "Bearer " + token,
+			"x-temp-id":      "dev-guest",
+			"x-timestamp":    fmt.Sprintf("%d", time.Now().Unix()),
+			"x-nonce":        "nonce-b",
+			"x-extension-id": "ext-good",
 		})
 		if second.Code != http.StatusTooManyRequests {
 			t.Fatalf("expected 429, got %d", second.Code)
+		}
+	})
+
+	t.Run("Given extension id is not allowed When checking token Then returns 403", func(t *testing.T) {
+		setupAuthEnv(t, nil)
+		token := seedTokenInRedis(t, "user-a", "user", "dev-1", time.Now().Add(1*time.Minute).Unix())
+
+		w := runGinHandler(CheckToken, http.MethodGet, "/check_token", map[string]string{
+			"Authorization":  "Bearer " + token,
+			"x-temp-id":      "dev-1",
+			"x-timestamp":    fmt.Sprintf("%d", time.Now().Unix()),
+			"x-nonce":        "nonce-1",
+			"x-extension-id": "ext-bad",
+		})
+
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d", w.Code)
 		}
 	})
 }
@@ -466,6 +541,124 @@ func TestAuthUtilityFunctions(t *testing.T) {
 		}
 		if decoded.UID != original.UID || decoded.Role != original.Role || decoded.DeviceID != original.DeviceID {
 			t.Fatalf("decoded payload mismatch: %+v", decoded)
+		}
+	})
+}
+
+func TestExtensionWhitelist(t *testing.T) {
+	t.Run("Given redis whitelist key is empty When initializing whitelist Then seeds values from config", func(t *testing.T) {
+		setupAuthEnv(t, func(cfg *config.Config) {
+			cfg.AllowedExtensionIDs = []string{"ext-good", "ext-new"}
+		})
+
+		if err := InitExtensionWhitelist(); err != nil {
+			t.Fatalf("expected init whitelist success, got %v", err)
+		}
+
+		members, err := redisClient.Client.SMembers(redisClient.Ctx, allowedExtensionsRedisKey).Result()
+		if err != nil {
+			t.Fatalf("failed to read redis whitelist: %v", err)
+		}
+		if len(members) != 2 {
+			t.Fatalf("expected 2 whitelist entries, got %v", members)
+		}
+	})
+
+	t.Run("Given redis whitelist already exists When initializing whitelist Then keeps redis as source of truth", func(t *testing.T) {
+		setupAuthEnv(t, func(cfg *config.Config) {
+			cfg.AllowedExtensionIDs = []string{"ext-env"}
+		})
+
+		if err := redisClient.Client.SAdd(redisClient.Ctx, allowedExtensionsRedisKey, "ext-redis").Err(); err != nil {
+			t.Fatalf("failed to seed redis whitelist: %v", err)
+		}
+
+		if err := InitExtensionWhitelist(); err != nil {
+			t.Fatalf("expected init whitelist success, got %v", err)
+		}
+
+		members, err := redisClient.Client.SMembers(redisClient.Ctx, allowedExtensionsRedisKey).Result()
+		if err != nil {
+			t.Fatalf("failed to read redis whitelist: %v", err)
+		}
+		if len(members) != 1 || members[0] != "ext-redis" {
+			t.Fatalf("expected redis whitelist unchanged, got %v", members)
+		}
+	})
+
+	t.Run("Given redis whitelist exists When extension id is only in redis Then auth_token accepts it", func(t *testing.T) {
+		setupAuthEnv(t, func(cfg *config.Config) {
+			cfg.AllowedExtensionIDs = []string{"ext-env"}
+		})
+
+		if err := redisClient.Client.SAdd(redisClient.Ctx, allowedExtensionsRedisKey, "ext-redis-only").Err(); err != nil {
+			t.Fatalf("failed to seed redis whitelist: %v", err)
+		}
+
+		timestamp := fmt.Sprintf("%d", time.Now().Unix())
+		w := runGinHandler(AuthToken, http.MethodPost, "/auth_token", map[string]string{
+			"x-temp-id":      "tmp-redis",
+			"x-extension-id": "ext-redis-only",
+			"x-timestamp":    timestamp,
+			"x-init-salt":    validInitSalt("ext-redis-only", timestamp),
+		})
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("Given redis whitelist stored as string When checking extension Then parser still allows it", func(t *testing.T) {
+		setupAuthEnv(t, func(cfg *config.Config) {
+			cfg.AllowedExtensionIDs = []string{"ext-env"}
+		})
+
+		if err := redisClient.Client.Set(redisClient.Ctx, allowedExtensionsRedisKey, "ext-a,ext-b", 0).Err(); err != nil {
+			t.Fatalf("failed to seed string whitelist: %v", err)
+		}
+
+		resetAllowedExtensionsCache()
+		if !isExtensionAllowed("ext-b") {
+			t.Fatalf("expected ext-b to be allowed from redis string key")
+		}
+	})
+
+	t.Run("Given env whitelist changes When cache expires Then new env value is applied", func(t *testing.T) {
+		setupAuthEnv(t, func(cfg *config.Config) {
+			cfg.AllowedExtensionIDs = []string{"ext-config"}
+		})
+		t.Setenv("INIT_ALLOWED_EXTENSION_IDS", "ext-env-a")
+		allowedExtensionsReloadInterval = 50 * time.Millisecond
+
+		resetAllowedExtensionsCache()
+		if !isExtensionAllowed("ext-env-a") {
+			t.Fatalf("expected ext-env-a to be allowed")
+		}
+
+		t.Setenv("INIT_ALLOWED_EXTENSION_IDS", "ext-env-b")
+		// 缓存周期内仍应命中旧快照
+		if isExtensionAllowed("ext-env-b") {
+			t.Fatalf("expected ext-env-b to be unavailable before cache refresh")
+		}
+
+		time.Sleep(70 * time.Millisecond)
+		if !isExtensionAllowed("ext-env-b") {
+			t.Fatalf("expected ext-env-b to be allowed after cache refresh")
+		}
+	})
+
+	t.Run("Given firefox style extension id with braces When whitelist stores plain id Then check still passes", func(t *testing.T) {
+		setupAuthEnv(t, func(cfg *config.Config) {
+			cfg.AllowedExtensionIDs = []string{"ec1a757b-3969-4e9a-86e9-c9cd54028a1f"}
+		})
+
+		if err := redisClient.Client.SAdd(redisClient.Ctx, allowedExtensionsRedisKey, "ec1a757b-3969-4e9a-86e9-c9cd54028a1f").Err(); err != nil {
+			t.Fatalf("failed to seed redis whitelist: %v", err)
+		}
+
+		resetAllowedExtensionsCache()
+		if !isExtensionAllowed("{ec1a757b-3969-4e9a-86e9-c9cd54028a1f}") {
+			t.Fatalf("expected brace-wrapped extension id to be allowed")
 		}
 	})
 }

@@ -11,15 +11,30 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
+	"github.com/joho/godotenv"
 	"github.com/yourname/side-go-server/config"
 	redisClient "github.com/yourname/side-go-server/internal/redis"
 )
+
+const allowedExtensionsRedisKey = "auth:allowed_extension_ids"
+
+var allowedExtensionsReloadInterval = 10 * time.Second
+
+var allowedExtensionsCache = struct {
+	mu        sync.RWMutex
+	expiresAt time.Time
+	ids       map[string]struct{}
+	source    string
+}{}
 
 type TokenPayload struct {
 	UID      string `json:"uid"`
@@ -61,13 +76,32 @@ func AuthToken(c *gin.Context) {
 	}
 
 	if !isExtensionAllowed(extensionID) {
-		log.Printf("WARN auth_token rejected: reason=extension_not_allowed ip=%s temp_id=%q extension_id=%q", clientIP, tempID, extensionID)
+		source, ids := getAllowedExtensionsSnapshotForLog()
+		log.Printf(
+			"WARN auth_token rejected: reason=extension_not_allowed ip=%s temp_id=%q extension_id=%q source=%s allowed_ids=%v",
+			clientIP,
+			tempID,
+			extensionID,
+			source,
+			ids,
+		)
 		c.AbortWithStatusJSON(403, gin.H{"error": "Invalid extension ID"})
 		return
 	}
 
-	if !isTimestampValid(timestamp, 60) {
-		log.Printf("WARN auth_token rejected: reason=timestamp_invalid ip=%s temp_id=%q extension_id=%q timestamp=%q tolerance_seconds=60", clientIP, tempID, extensionID, timestamp)
+	if !checkAuthRateLimit(clientIP) {
+		log.Printf("WARN auth_token rejected: reason=rate_limited ip=%s limit_auth_rpm=%d", clientIP, config.Cfg.LimitAuthRPM)
+		c.AbortWithStatusJSON(429, gin.H{"error": "Rate limit exceeded"})
+		return
+	}
+
+	toleranceSeconds := int64(config.Cfg.TimestampTolerance.Seconds())
+	if toleranceSeconds <= 0 {
+		toleranceSeconds = 60
+	}
+
+	if !isTimestampValid(timestamp, toleranceSeconds) {
+		log.Printf("WARN auth_token rejected: reason=timestamp_invalid ip=%s temp_id=%q extension_id=%q timestamp=%q tolerance_seconds=%d", clientIP, tempID, extensionID, timestamp, toleranceSeconds)
 		c.AbortWithStatusJSON(401, gin.H{"error": "Timestamp expired"})
 		return
 	}
@@ -173,6 +207,7 @@ func CheckToken(c *gin.Context) {
 	timestamp := c.GetHeader("x-timestamp")
 	nonce := c.GetHeader("x-nonce")
 	tempID := c.GetHeader("x-temp-id")
+	extensionID := c.GetHeader("x-extension-id")
 	clientIP := c.ClientIP()
 
 	token := extractBearerToken(authHeader)
@@ -182,8 +217,8 @@ func CheckToken(c *gin.Context) {
 		return
 	}
 
-	if tempID == "" || timestamp == "" || nonce == "" {
-		missing := make([]string, 0, 3)
+	if tempID == "" || timestamp == "" || nonce == "" || extensionID == "" {
+		missing := make([]string, 0, 4)
 		if tempID == "" {
 			missing = append(missing, "x-temp-id")
 		}
@@ -193,8 +228,25 @@ func CheckToken(c *gin.Context) {
 		if nonce == "" {
 			missing = append(missing, "x-nonce")
 		}
+		if extensionID == "" {
+			missing = append(missing, "x-extension-id")
+		}
 		log.Printf("WARN check_token rejected: reason=missing_headers ip=%s missing=%v", clientIP, missing)
 		c.AbortWithStatus(400)
+		return
+	}
+
+	if !isExtensionAllowed(extensionID) {
+		source, ids := getAllowedExtensionsSnapshotForLog()
+		log.Printf(
+			"WARN check_token rejected: reason=extension_not_allowed ip=%s temp_id=%q extension_id=%q source=%s allowed_ids=%v",
+			clientIP,
+			tempID,
+			extensionID,
+			source,
+			ids,
+		)
+		c.AbortWithStatus(403)
 		return
 	}
 
@@ -271,13 +323,273 @@ func CheckToken(c *gin.Context) {
 	c.Status(200)
 }
 
-func isExtensionAllowed(extensionID string) bool {
-	for _, id := range config.Cfg.AllowedExtensionIDs {
-		if id == extensionID {
-			return true
+func InitExtensionWhitelist() error {
+	if redisClient.Client == nil {
+		return fmt.Errorf("redis client is not initialized")
+	}
+
+	keyType, err := redisClient.Client.Type(redisClient.Ctx, allowedExtensionsRedisKey).Result()
+	if err != nil {
+		return fmt.Errorf("failed to check extension whitelist key type: %w", err)
+	}
+
+	switch keyType {
+	case "none":
+		ids := loadAllowedExtensionIDsFromEnvOrConfig()
+		if len(ids) == 0 {
+			return fmt.Errorf("no allowed extension IDs configured")
+		}
+
+		members := make([]interface{}, 0, len(ids))
+		for _, id := range ids {
+			members = append(members, id)
+		}
+		if err := redisClient.Client.SAdd(redisClient.Ctx, allowedExtensionsRedisKey, members...).Err(); err != nil {
+			return fmt.Errorf("failed to seed extension whitelist: %w", err)
+		}
+		log.Printf("INFO extension whitelist seeded to redis: key=%q count=%d ids=%v", allowedExtensionsRedisKey, len(ids), ids)
+		return nil
+
+	case "set":
+		ids, _, err := loadAllowedExtensionIDsFromRedis()
+		if err != nil {
+			log.Printf("WARN extension whitelist initialized but list query failed: key=%q err=%v", allowedExtensionsRedisKey, err)
+			return nil
+		}
+		log.Printf("INFO extension whitelist loaded from redis: key=%q count=%d ids=%v", allowedExtensionsRedisKey, len(ids), ids)
+		return nil
+
+	case "string", "list":
+		ids, _, err := loadAllowedExtensionIDsFromRedis()
+		if err != nil {
+			return fmt.Errorf("failed to migrate extension whitelist from redis %s: %w", keyType, err)
+		}
+		if len(ids) == 0 {
+			ids = loadAllowedExtensionIDsFromEnvOrConfig()
+		}
+		if len(ids) == 0 {
+			return fmt.Errorf("extension whitelist migration found empty ids")
+		}
+
+		if err := redisClient.Client.Del(redisClient.Ctx, allowedExtensionsRedisKey).Err(); err != nil {
+			return fmt.Errorf("failed to clear extension whitelist key before migration: %w", err)
+		}
+		members := make([]interface{}, 0, len(ids))
+		for _, id := range ids {
+			members = append(members, id)
+		}
+		if err := redisClient.Client.SAdd(redisClient.Ctx, allowedExtensionsRedisKey, members...).Err(); err != nil {
+			return fmt.Errorf("failed to migrate extension whitelist to set: %w", err)
+		}
+		log.Printf("INFO extension whitelist migrated to redis set: key=%q from_type=%s count=%d ids=%v", allowedExtensionsRedisKey, keyType, len(ids), ids)
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported redis key type for extension whitelist: %s", keyType)
+	}
+}
+
+func normalizeAllowedExtensionIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(ids))
+	result := make([]string, 0, len(ids))
+	for _, id := range ids {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
+			continue
+		}
+		trimmed = strings.ToLower(trimmed)
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func parseExtensionIDsRaw(raw string) []string {
+	normalized := strings.ReplaceAll(raw, "\n", ",")
+	normalized = strings.ReplaceAll(normalized, ";", ",")
+	return normalizeAllowedExtensionIDs(strings.Split(normalized, ","))
+}
+
+func loadAllowedExtensionIDsFromEnvOrConfig() []string {
+	raw := strings.TrimSpace(os.Getenv("INIT_ALLOWED_EXTENSION_IDS"))
+
+	if raw == "" {
+		if envMap, err := godotenv.Read(); err == nil {
+			raw = strings.TrimSpace(envMap["INIT_ALLOWED_EXTENSION_IDS"])
 		}
 	}
+
+	if raw != "" {
+		ids := parseExtensionIDsRaw(raw)
+		if len(ids) > 0 {
+			return ids
+		}
+	}
+
+	if strings.TrimSpace(config.Cfg.InitAllowedExtensionIDs) != "" {
+		ids := parseExtensionIDsRaw(config.Cfg.InitAllowedExtensionIDs)
+		if len(ids) > 0 {
+			return ids
+		}
+	}
+
+	return normalizeAllowedExtensionIDs(config.Cfg.AllowedExtensionIDs)
+}
+
+func loadAllowedExtensionIDsFromRedis() ([]string, string, error) {
+	if redisClient.Client == nil {
+		return nil, "none", fmt.Errorf("redis client is not initialized")
+	}
+
+	keyType, err := redisClient.Client.Type(redisClient.Ctx, allowedExtensionsRedisKey).Result()
+	if err != nil {
+		return nil, "", err
+	}
+
+	switch keyType {
+	case "none":
+		return nil, keyType, nil
+	case "set":
+		members, err := redisClient.Client.SMembers(redisClient.Ctx, allowedExtensionsRedisKey).Result()
+		if err != nil {
+			return nil, keyType, err
+		}
+		return normalizeAllowedExtensionIDs(members), keyType, nil
+	case "string":
+		raw, err := redisClient.Client.Get(redisClient.Ctx, allowedExtensionsRedisKey).Result()
+		if err == redis.Nil {
+			return nil, keyType, nil
+		}
+		if err != nil {
+			return nil, keyType, err
+		}
+		return parseExtensionIDsRaw(raw), keyType, nil
+	case "list":
+		values, err := redisClient.Client.LRange(redisClient.Ctx, allowedExtensionsRedisKey, 0, -1).Result()
+		if err != nil {
+			return nil, keyType, err
+		}
+		return normalizeAllowedExtensionIDs(values), keyType, nil
+	default:
+		return nil, keyType, fmt.Errorf("unsupported redis key type: %s", keyType)
+	}
+}
+
+func loadAllowedExtensionIDSet() (map[string]struct{}, string) {
+	ids, sourceType, err := loadAllowedExtensionIDsFromRedis()
+	if err != nil {
+		log.Printf("WARN extension whitelist redis load failed, fallback to env/config: key=%q err=%v", allowedExtensionsRedisKey, err)
+	} else if len(ids) > 0 {
+		set := make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			set[id] = struct{}{}
+		}
+		return set, "redis:" + sourceType
+	}
+
+	fallback := loadAllowedExtensionIDsFromEnvOrConfig()
+	set := make(map[string]struct{}, len(fallback))
+	for _, id := range fallback {
+		set[id] = struct{}{}
+	}
+	return set, "env_or_config"
+}
+
+func getAllowedExtensionIDSet() map[string]struct{} {
+	now := time.Now()
+
+	allowedExtensionsCache.mu.RLock()
+	if now.Before(allowedExtensionsCache.expiresAt) && len(allowedExtensionsCache.ids) > 0 {
+		ids := allowedExtensionsCache.ids
+		allowedExtensionsCache.mu.RUnlock()
+		return ids
+	}
+	allowedExtensionsCache.mu.RUnlock()
+
+	allowedExtensionsCache.mu.Lock()
+	defer allowedExtensionsCache.mu.Unlock()
+
+	now = time.Now()
+	if now.Before(allowedExtensionsCache.expiresAt) && len(allowedExtensionsCache.ids) > 0 {
+		return allowedExtensionsCache.ids
+	}
+
+	ids, source := loadAllowedExtensionIDSet()
+	allowedExtensionsCache.ids = ids
+	allowedExtensionsCache.source = source
+	allowedExtensionsCache.expiresAt = now.Add(allowedExtensionsReloadInterval)
+	log.Printf(
+		"INFO extension whitelist cache refreshed: source=%s count=%d ids=%v next_refresh_in=%s",
+		source,
+		len(ids),
+		mapKeysSorted(ids),
+		allowedExtensionsReloadInterval,
+	)
+
+	return allowedExtensionsCache.ids
+}
+
+func resetAllowedExtensionsCache() {
+	allowedExtensionsCache.mu.Lock()
+	defer allowedExtensionsCache.mu.Unlock()
+	allowedExtensionsCache.ids = nil
+	allowedExtensionsCache.source = ""
+	allowedExtensionsCache.expiresAt = time.Time{}
+}
+
+func isExtensionAllowed(extensionID string) bool {
+	if extensionID == "" {
+		return false
+	}
+	extensionID = strings.TrimSpace(extensionID)
+	if extensionID == "" {
+		return false
+	}
+	extensionID = strings.ToLower(extensionID)
+
+	ids := getAllowedExtensionIDSet()
+	if _, ok := ids[extensionID]; ok {
+		return true
+	}
+
+	// 兼容 Firefox 风格的 "{id}" 与无花括号写法
+	if strings.HasPrefix(extensionID, "{") && strings.HasSuffix(extensionID, "}") {
+		trimmed := strings.TrimPrefix(strings.TrimSuffix(extensionID, "}"), "{")
+		_, ok := ids[trimmed]
+		return ok
+	}
+	if _, ok := ids["{"+extensionID+"}"]; ok {
+		return true
+	}
+
 	return false
+}
+
+func mapKeysSorted(m map[string]struct{}) []string {
+	if len(m) == 0 {
+		return []string{}
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func getAllowedExtensionsSnapshotForLog() (string, []string) {
+	_ = getAllowedExtensionIDSet()
+	allowedExtensionsCache.mu.RLock()
+	defer allowedExtensionsCache.mu.RUnlock()
+	return allowedExtensionsCache.source, mapKeysSorted(allowedExtensionsCache.ids)
 }
 
 func isTimestampValid(timestampStr string, toleranceSeconds int64) bool {
@@ -412,6 +724,32 @@ func checkRateLimit(uid, role, tempID string) bool {
 	if count == 1 {
 		if err := redisClient.Client.Expire(redisClient.Ctx, key, 60*time.Second).Err(); err != nil {
 			log.Printf("WARN rate_limit ttl set failed: uid=%q role=%q temp_id=%q key=%q err=%v", uid, role, tempID, key, err)
+		}
+	}
+
+	return count <= int64(limit)
+}
+
+func checkAuthRateLimit(clientIP string) bool {
+	limit := config.Cfg.LimitAuthRPM
+	if limit <= 0 {
+		return true
+	}
+	if redisClient.Client == nil {
+		log.Printf("WARN auth rate_limit bypass due to nil redis client: ip=%s", clientIP)
+		return true
+	}
+
+	key := fmt.Sprintf("rate:auth:%s", clientIP)
+	count, err := redisClient.Client.Incr(redisClient.Ctx, key).Result()
+	if err != nil {
+		log.Printf("WARN auth rate_limit bypass due to redis error: ip=%s key=%q err=%v", clientIP, key, err)
+		return true
+	}
+
+	if count == 1 {
+		if err := redisClient.Client.Expire(redisClient.Ctx, key, 60*time.Second).Err(); err != nil {
+			log.Printf("WARN auth rate_limit ttl set failed: ip=%s key=%q err=%v", clientIP, key, err)
 		}
 	}
 
