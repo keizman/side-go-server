@@ -54,10 +54,23 @@ func AuthToken(c *gin.Context) {
 	tempID := c.GetHeader("x-temp-id")
 	extensionID := c.GetHeader("x-extension-id")
 	timestamp := c.GetHeader("x-timestamp")
-	userID := c.GetHeader("x-user-id")
+	userID := strings.TrimSpace(c.GetHeader("x-user-id"))
 	clientSalt := c.GetHeader("x-init-salt")
 	authHeader := c.GetHeader("Authorization")
 	clientIP := c.ClientIP()
+	hasUserID := userID != ""
+	userIDLen := len(userID)
+
+	log.Printf(
+		"INFO auth_token request: ip=%s temp_id=%q extension_id=%q has_user_id=%t user_id_len=%d has_auth=%t has_init_salt=%t",
+		clientIP,
+		tempID,
+		extensionID,
+		hasUserID,
+		userIDLen,
+		authHeader != "",
+		clientSalt != "",
+	)
 
 	if tempID == "" || extensionID == "" || timestamp == "" {
 		missing := make([]string, 0, 3)
@@ -193,7 +206,16 @@ func AuthToken(c *gin.Context) {
 		return
 	}
 
-	log.Printf("INFO auth_token success: ip=%s uid=%q role=%q temp_id=%q ttl_seconds=%d", clientIP, identity, role, tempID, tokenTTL)
+	log.Printf(
+		"INFO auth_token success: ip=%s uid=%q role=%q temp_id=%q ttl_seconds=%d has_user_id=%t user_id_len=%d",
+		clientIP,
+		identity,
+		role,
+		tempID,
+		tokenTTL,
+		hasUserID,
+		userIDLen,
+	)
 
 	c.JSON(200, AuthTokenResponse{
 		Token:         newToken,
