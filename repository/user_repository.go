@@ -25,8 +25,8 @@ func (r *UserRepository) CreateUser(user *models.User, password string) error {
 	}
 
 	query := `
-		INSERT INTO users (username, email, password_hash, display_name, role, status, register_ip, request_count, email_verified)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO users (username, email, password_hash, display_name, role, tier, status, register_ip, request_count, email_verified)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, created_at, updated_at
 	`
 
@@ -37,6 +37,7 @@ func (r *UserRepository) CreateUser(user *models.User, password string) error {
 		string(hashedPassword),
 		user.DisplayName,
 		user.Role,
+		user.Tier,
 		user.Status,
 		user.RegisterIP,
 		user.RequestCount,
@@ -53,7 +54,7 @@ func (r *UserRepository) CreateUser(user *models.User, password string) error {
 func (r *UserRepository) GetUserByUsername(username string) (*models.User, error) {
 	user := &models.User{}
 	query := `
-		SELECT id, username, email, password_hash, display_name, role, status, 
+		SELECT id, username, email, password_hash, display_name, role, tier, status, 
 		       register_ip, request_count, last_login_at, last_login_ip,
 		       created_at, updated_at, email_verified, email_verified_at, deleted_at
 		FROM users
@@ -67,6 +68,7 @@ func (r *UserRepository) GetUserByUsername(username string) (*models.User, error
 		&user.PasswordHash,
 		&user.DisplayName,
 		&user.Role,
+		&user.Tier,
 		&user.Status,
 		&user.RegisterIP,
 		&user.RequestCount,
@@ -92,7 +94,7 @@ func (r *UserRepository) GetUserByUsername(username string) (*models.User, error
 func (r *UserRepository) GetUserByEmail(email string) (*models.User, error) {
 	user := &models.User{}
 	query := `
-		SELECT id, username, email, password_hash, display_name, role, status, 
+		SELECT id, username, email, password_hash, display_name, role, tier, status, 
 		       register_ip, request_count, last_login_at, last_login_ip,
 		       created_at, updated_at, email_verified, email_verified_at, deleted_at
 		FROM users
@@ -106,6 +108,7 @@ func (r *UserRepository) GetUserByEmail(email string) (*models.User, error) {
 		&user.PasswordHash,
 		&user.DisplayName,
 		&user.Role,
+		&user.Tier,
 		&user.Status,
 		&user.RegisterIP,
 		&user.RequestCount,
@@ -131,7 +134,7 @@ func (r *UserRepository) GetUserByEmail(email string) (*models.User, error) {
 func (r *UserRepository) GetUserByUsernameOrEmail(usernameOrEmail string) (*models.User, error) {
 	user := &models.User{}
 	query := `
-		SELECT id, username, email, password_hash, display_name, role, status, 
+		SELECT id, username, email, password_hash, display_name, role, tier, status, 
 		       register_ip, request_count, last_login_at, last_login_ip,
 		       created_at, updated_at, email_verified, email_verified_at, deleted_at
 		FROM users
@@ -145,6 +148,7 @@ func (r *UserRepository) GetUserByUsernameOrEmail(usernameOrEmail string) (*mode
 		&user.PasswordHash,
 		&user.DisplayName,
 		&user.Role,
+		&user.Tier,
 		&user.Status,
 		&user.RegisterIP,
 		&user.RequestCount,
@@ -230,6 +234,7 @@ func (r *UserRepository) CreateDefaultAdmin(username, password, email string) er
 		Email:         email,
 		DisplayName:   sql.NullString{String: "Administrator", Valid: true},
 		Role:          "admin",
+		Tier:          2,
 		Status:        "active",
 		RegisterIP:    sql.NullString{String: "127.0.0.1", Valid: true},
 		RequestCount:  0,

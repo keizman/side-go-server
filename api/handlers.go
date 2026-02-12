@@ -8,6 +8,8 @@ import (
 	redisClient "github.com/yourname/side-go-server/internal/redis"
 )
 
+const defaultUserTier = 2
+
 type LoginRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required,min=6"`
@@ -35,6 +37,10 @@ func Login(c *gin.Context) {
 	guestTokenKey := fmt.Sprintf("token:%s:%s", tempID, tempID)
 	if err := redisClient.Client.Del(redisClient.Ctx, guestTokenKey).Err(); err != nil {
 		log.Printf("WARN login guest token cleanup failed: ip=%s temp_id=%q key=%q err=%v", c.ClientIP(), tempID, guestTokenKey, err)
+	}
+	tierKey := fmt.Sprintf("user:tier:%s", userID)
+	if err := redisClient.Client.Set(redisClient.Ctx, tierKey, defaultUserTier, 0).Err(); err != nil {
+		log.Printf("WARN login user tier cache set failed: ip=%s user_id=%q key=%q tier=%d err=%v", c.ClientIP(), userID, tierKey, defaultUserTier, err)
 	}
 
 	log.Printf("INFO login success: ip=%s temp_id=%q email=%q user_id=%q", c.ClientIP(), tempID, email, userID)
@@ -101,6 +107,7 @@ func Translate(c *gin.Context) {
 		"message": "Translation endpoint placeholder",
 		"uid":     c.GetString("verified_uid"),
 		"role":    c.GetString("verified_role"),
+		"tier":    c.GetString("verified_tier"),
 	})
 }
 
@@ -109,5 +116,6 @@ func GetProfile(c *gin.Context) {
 		"message": "Profile endpoint placeholder",
 		"uid":     c.GetString("verified_uid"),
 		"role":    c.GetString("verified_role"),
+		"tier":    c.GetString("verified_tier"),
 	})
 }

@@ -235,8 +235,9 @@ signature = HMAC-SHA256(SHA256(body)|timestamp|tempId, token)
 
 ### Rate Limiting
 
-- **Guest users**: 100 requests per minute per temp_id
-- **Authenticated users**: 200 requests per minute per uid
+- **Tier 1 (free/guest)**: default 10 requests per minute
+- **Tier 2 (user)**: default 20 requests per minute
+- **Tier 3 (pay)**: default 200 requests per minute (10x tier 2)
 - Counters stored in Redis with 60-second TTL
 
 ### Token Encryption

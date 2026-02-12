@@ -74,6 +74,7 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 		Email:        req.Email,
 		DisplayName:  sql.NullString{String: req.Username, Valid: true},
 		Role:         "user",
+		Tier:         2,
 		Status:       "active",
 		RegisterIP:   sql.NullString{String: clientIP, Valid: true},
 		RequestCount: 0,

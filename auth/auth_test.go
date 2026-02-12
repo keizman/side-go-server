@@ -34,6 +34,9 @@ func setupAuthEnv(t *testing.T, mutate func(*config.Config)) *miniredis.Miniredi
 		NonceTTL:            2 * time.Minute,
 		LimitGuestRPM:       5,
 		LimitUserRPM:        5,
+		LimitTier1RPM:       5,
+		LimitTier2RPM:       5,
+		LimitTier3RPM:       50,
 	}
 	if mutate != nil {
 		mutate(cfg)
@@ -85,10 +88,15 @@ func decodeAuthTokenResponse(t *testing.T, body []byte) AuthTokenResponse {
 
 func seedTokenInRedis(t *testing.T, uid, role, deviceID string, expiresAt int64) string {
 	t.Helper()
+	tier := tierUser
+	if role == "guest" {
+		tier = tierFree
+	}
 
 	token, err := encryptToken(TokenPayload{
 		UID:      uid,
 		Role:     role,
+		Tier:     tier,
 		DeviceID: deviceID,
 		Exp:      expiresAt,
 		Iat:      time.Now().Unix(),
@@ -200,7 +208,7 @@ func TestAuthToken(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to decrypt token: %v", err)
 		}
-		if payload.UID != tempID || payload.Role != "guest" || payload.DeviceID != tempID {
+		if payload.UID != tempID || payload.Role != "guest" || payload.Tier != tierFree || payload.DeviceID != tempID {
 			t.Fatalf("unexpected payload: %+v", payload)
 		}
 
@@ -234,7 +242,7 @@ func TestAuthToken(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to decrypt token: %v", err)
 		}
-		if payload.UID != "user-123" || payload.Role != "user" {
+		if payload.UID != "user-123" || payload.Role != "user" || payload.Tier != tierUser {
 			t.Fatalf("unexpected payload: %+v", payload)
 		}
 	})
@@ -286,6 +294,7 @@ func TestAuthToken(t *testing.T) {
 		token, err := encryptToken(TokenPayload{
 			UID:      "guest-2",
 			Role:     "guest",
+			Tier:     tierFree,
 			DeviceID: "tmp-2",
 			Exp:      time.Now().Add(1 * time.Minute).Unix(),
 			Iat:      time.Now().Unix(),
@@ -373,7 +382,7 @@ func TestCheckToken(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", w.Code)
 		}
-		if w.Header().Get("X-Verified-UID") != "user-a" || w.Header().Get("X-Verified-Role") != "user" {
+		if w.Header().Get("X-Verified-UID") != "user-a" || w.Header().Get("X-Verified-Role") != "user" || w.Header().Get("X-Verified-Tier") != "2" {
 			t.Fatalf("missing verified headers: %+v", w.Header())
 		}
 	})
@@ -417,6 +426,7 @@ func TestCheckToken(t *testing.T) {
 		token, err := encryptToken(TokenPayload{
 			UID:      "user-a",
 			Role:     "user",
+			Tier:     tierUser,
 			DeviceID: "dev-1",
 			Exp:      time.Now().Add(1 * time.Minute).Unix(),
 			Iat:      time.Now().Unix(),
@@ -462,7 +472,7 @@ func TestCheckToken(t *testing.T) {
 
 	t.Run("Given guest limit exceeded When checking token repeatedly Then returns 429", func(t *testing.T) {
 		setupAuthEnv(t, func(cfg *config.Config) {
-			cfg.LimitGuestRPM = 1
+			cfg.LimitTier1RPM = 1
 		})
 		token := seedTokenInRedis(t, "guest-1", "guest", "dev-guest", time.Now().Add(1*time.Minute).Unix())
 
@@ -486,6 +496,50 @@ func TestCheckToken(t *testing.T) {
 		})
 		if second.Code != http.StatusTooManyRequests {
 			t.Fatalf("expected 429, got %d", second.Code)
+		}
+	})
+
+	t.Run("Given pay tier has 10x user limit When checking token repeatedly Then pay requests stay within budget", func(t *testing.T) {
+		setupAuthEnv(t, func(cfg *config.Config) {
+			cfg.LimitTier2RPM = 1
+			cfg.LimitTier3RPM = 10
+		})
+		token := seedTokenInRedis(t, "pay-u1", "user", "dev-pay", time.Now().Add(1*time.Minute).Unix())
+		payload, err := decryptToken(token)
+		if err != nil {
+			t.Fatalf("failed to decrypt seeded token: %v", err)
+		}
+		payload.Tier = tierPay
+		token, err = encryptToken(*payload)
+		if err != nil {
+			t.Fatalf("failed to recreate pay token: %v", err)
+		}
+		if err := redisClient.Client.SetEX(redisClient.Ctx, "token:pay-u1:dev-pay", token, config.Cfg.TokenTTL).Err(); err != nil {
+			t.Fatalf("failed to seed pay token: %v", err)
+		}
+
+		for i := 0; i < 10; i++ {
+			w := runGinHandler(CheckToken, http.MethodGet, "/check_token", map[string]string{
+				"Authorization":  "Bearer " + token,
+				"x-temp-id":      "dev-pay",
+				"x-timestamp":    fmt.Sprintf("%d", time.Now().Unix()),
+				"x-nonce":        fmt.Sprintf("nonce-pay-%d", i),
+				"x-extension-id": "ext-good",
+			})
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected pay request #%d to pass with 200, got %d", i+1, w.Code)
+			}
+		}
+
+		blocked := runGinHandler(CheckToken, http.MethodGet, "/check_token", map[string]string{
+			"Authorization":  "Bearer " + token,
+			"x-temp-id":      "dev-pay",
+			"x-timestamp":    fmt.Sprintf("%d", time.Now().Unix()),
+			"x-nonce":        "nonce-pay-over",
+			"x-extension-id": "ext-good",
+		})
+		if blocked.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected pay request #11 to return 429, got %d", blocked.Code)
 		}
 	})
 
@@ -530,7 +584,7 @@ func TestAuthUtilityFunctions(t *testing.T) {
 	t.Run("Given token payload When encrypting then decrypting Then payload is preserved", func(t *testing.T) {
 		setupAuthEnv(t, nil)
 
-		original := TokenPayload{UID: "u1", Role: "user", DeviceID: "d1", Exp: time.Now().Add(1 * time.Minute).Unix(), Iat: time.Now().Unix()}
+		original := TokenPayload{UID: "u1", Role: "user", Tier: tierUser, DeviceID: "d1", Exp: time.Now().Add(1 * time.Minute).Unix(), Iat: time.Now().Unix()}
 		token, err := encryptToken(original)
 		if err != nil {
 			t.Fatalf("encrypt failed: %v", err)
@@ -539,7 +593,7 @@ func TestAuthUtilityFunctions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decrypt failed: %v", err)
 		}
-		if decoded.UID != original.UID || decoded.Role != original.Role || decoded.DeviceID != original.DeviceID {
+		if decoded.UID != original.UID || decoded.Role != original.Role || decoded.Tier != original.Tier || decoded.DeviceID != original.DeviceID {
 			t.Fatalf("decoded payload mismatch: %+v", decoded)
 		}
 	})

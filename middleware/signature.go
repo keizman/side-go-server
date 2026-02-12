@@ -57,6 +57,7 @@ func VerifySignature() gin.HandlerFunc {
 
 		c.Set("verified_uid", c.GetHeader("X-Verified-UID"))
 		c.Set("verified_role", c.GetHeader("X-Verified-Role"))
+		c.Set("verified_tier", c.GetHeader("X-Verified-Tier"))
 		c.Set("verified_device_id", c.GetHeader("X-Verified-DeviceID"))
 
 		c.Next()

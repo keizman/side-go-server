@@ -76,8 +76,9 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     display_name VARCHAR(100),
-    status VARCHAR(20) NOT NULL DEFAULT 'active',
     role VARCHAR(20) NOT NULL DEFAULT 'user',
+    tier SMALLINT NOT NULL DEFAULT 2,
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
     register_ip INET,
     request_count BIGINT NOT NULL DEFAULT 0,
     last_login_at TIMESTAMP WITH TIME ZONE,
@@ -86,10 +87,12 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     email_verified BOOLEAN NOT NULL DEFAULT FALSE,
     email_verified_at TIMESTAMP WITH TIME ZONE,
-    deleted_at TIMESTAMP WITH TIME ZONE
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    CONSTRAINT chk_users_tier_1_2_3 CHECK (tier IN (1, 2, 3))
 );
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_tier ON users(tier);
 `
 	_, err = database.DB.Exec(fallback)
 	return err
@@ -109,6 +112,7 @@ func newTestUser(prefix string) *models.User {
 		Email:         prefix + "@example.com",
 		DisplayName:   sql.NullString{String: "BDD User", Valid: true},
 		Role:          "user",
+		Tier:          2,
 		Status:        "active",
 		RegisterIP:    sql.NullString{String: "127.0.0.1", Valid: true},
 		RequestCount:  0,

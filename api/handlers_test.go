@@ -72,6 +72,14 @@ func TestLogin(t *testing.T) {
 		if resp.UserID != "user_u@example.com" || resp.Email != "u@example.com" || resp.Action != "refresh_token" {
 			t.Fatalf("unexpected response: %+v", resp)
 		}
+		tierKey := "user:tier:user_u@example.com"
+		tierValue, err := mr.Get(tierKey)
+		if err != nil {
+			t.Fatalf("expected user tier key %s, got error: %v", tierKey, err)
+		}
+		if tierValue != "2" {
+			t.Fatalf("expected user tier value 2, got %s", tierValue)
+		}
 	})
 }
 

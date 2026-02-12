@@ -29,7 +29,7 @@ Successfully implemented a complete Chrome extension authentication system based
 **Key Features:**
 - AES-256-GCM token encryption
 - Nonce replay prevention with Redis
-- Rate limiting (100/min guest, 200/min user)
+- Tier-based rate limiting (tier1=10/min, tier2=20/min, tier3=200/min by default)
 - HMAC-SHA256 request signatures
 - Dynamic init salt validation
 - Comprehensive error handling

@@ -41,6 +41,9 @@ type Config struct {
 	LimitGuestRPM int
 	LimitUserRPM  int
 	LimitAuthRPM  int
+	LimitTier1RPM int
+	LimitTier2RPM int
+	LimitTier3RPM int
 
 	// 扩展白名单
 	InitAllowedExtensionIDs string
@@ -78,6 +81,12 @@ func Load() error {
 	// 加载 .env 文件 (开发环境)
 	_ = godotenv.Load()
 
+	legacyGuestRPM := getEnvInt("LIMIT_GUEST_RPM", 10)
+	legacyUserRPM := getEnvInt("LIMIT_USER_RPM", 20)
+	tier1RPM := getEnvInt("LIMIT_TIER_1_RPM", legacyGuestRPM)
+	tier2RPM := getEnvInt("LIMIT_TIER_2_RPM", legacyUserRPM)
+	tier3RPM := getEnvInt("LIMIT_TIER_3_RPM", tier2RPM*10)
+
 	Cfg = &Config{
 		// 基础配置
 		AppName:     getEnv("APP_NAME", "ExtensionBackend"),
@@ -106,9 +115,12 @@ func Load() error {
 		NonceTTL:           time.Duration(getEnvInt("NONCE_TTL_SECONDS", 310)) * time.Second,
 
 		// 速率限制
-		LimitGuestRPM: getEnvInt("LIMIT_GUEST_RPM", 10),
-		LimitUserRPM:  getEnvInt("LIMIT_USER_RPM", 20),
+		LimitGuestRPM: legacyGuestRPM,
+		LimitUserRPM:  legacyUserRPM,
 		LimitAuthRPM:  getEnvInt("LIMIT_AUTH_RPM", 10),
+		LimitTier1RPM: tier1RPM,
+		LimitTier2RPM: tier2RPM,
+		LimitTier3RPM: tier3RPM,
 
 		// 扩展白名单
 		InitAllowedExtensionIDs: getEnv("INIT_ALLOWED_EXTENSION_IDS", ""),

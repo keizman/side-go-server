@@ -39,6 +39,7 @@ var allowedExtensionsCache = struct {
 type TokenPayload struct {
 	UID      string `json:"uid"`
 	Role     string `json:"role"`
+	Tier     int    `json:"tier"`
 	DeviceID string `json:"device_id"`
 	Exp      int64  `json:"exp"`
 	Iat      int64  `json:"iat"`
@@ -121,6 +122,7 @@ func AuthToken(c *gin.Context) {
 
 	var identity string
 	var role string
+	var tier int
 	oldToken := extractBearerToken(authHeader)
 
 	if oldToken != "" {
@@ -150,11 +152,20 @@ func AuthToken(c *gin.Context) {
 
 		identity = payload.UID
 		role = payload.Role
+		tier = payload.Tier
 
 		if userID != "" && userID != identity {
 			log.Printf("INFO auth_token identity switch: ip=%s temp_id=%q from_uid=%q to_uid=%q", clientIP, tempID, identity, userID)
 			identity = userID
 			role = "user"
+			tier = resolveUserTier(userID)
+		}
+		if tier <= 0 {
+			if role == "guest" {
+				tier = 1
+			} else {
+				tier = resolveUserTier(identity)
+			}
 		}
 
 	} else if clientSalt != "" {
@@ -167,9 +178,11 @@ func AuthToken(c *gin.Context) {
 		if userID != "" {
 			identity = userID
 			role = "user"
+			tier = resolveUserTier(userID)
 		} else {
 			identity = tempID
 			role = "guest"
+			tier = 1
 		}
 
 	} else {
@@ -186,6 +199,7 @@ func AuthToken(c *gin.Context) {
 	newPayload := TokenPayload{
 		UID:      identity,
 		Role:     role,
+		Tier:     tier,
 		DeviceID: tempID,
 		Exp:      now + int64(tokenTTL),
 		Iat:      now,
@@ -207,10 +221,11 @@ func AuthToken(c *gin.Context) {
 	}
 
 	log.Printf(
-		"INFO auth_token success: ip=%s uid=%q role=%q temp_id=%q ttl_seconds=%d has_user_id=%t user_id_len=%d",
+		"INFO auth_token success: ip=%s uid=%q role=%q tier=%d temp_id=%q ttl_seconds=%d has_user_id=%t user_id_len=%d",
 		clientIP,
 		identity,
 		role,
+		tier,
 		tempID,
 		tokenTTL,
 		hasUserID,
@@ -331,16 +346,26 @@ func CheckToken(c *gin.Context) {
 		return
 	}
 
-	if !checkRateLimit(payload.UID, payload.Role, tempID) {
-		log.Printf("WARN check_token rejected: reason=rate_limited ip=%s uid=%q role=%q temp_id=%q", clientIP, payload.UID, payload.Role, tempID)
+	payload.Tier = normalizeTierWithAuthState(payload.Tier, payload.Role)
+
+	if !checkRateLimit(RateLimitContext{
+		UID:       payload.UID,
+		TempID:    tempID,
+		Tier:      payload.Tier,
+		Route:     c.FullPath(),
+		Method:    c.Request.Method,
+		AuthState: payload.Role,
+	}) {
+		log.Printf("WARN check_token rejected: reason=rate_limited ip=%s uid=%q role=%q tier=%d temp_id=%q", clientIP, payload.UID, payload.Role, payload.Tier, tempID)
 		c.AbortWithStatus(429)
 		return
 	}
 
-	log.Printf("INFO check_token success: ip=%s uid=%q role=%q temp_id=%q", clientIP, payload.UID, payload.Role, tempID)
+	log.Printf("INFO check_token success: ip=%s uid=%q role=%q tier=%d temp_id=%q", clientIP, payload.UID, payload.Role, payload.Tier, tempID)
 
 	c.Header("X-Verified-UID", payload.UID)
 	c.Header("X-Verified-Role", payload.Role)
+	c.Header("X-Verified-Tier", strconv.Itoa(payload.Tier))
 	c.Header("X-Verified-DeviceID", payload.DeviceID)
 	c.Status(200)
 }
@@ -723,33 +748,6 @@ func decryptToken(tokenStr string) (*TokenPayload, error) {
 	}
 
 	return &payload, nil
-}
-
-func checkRateLimit(uid, role, tempID string) bool {
-	var key string
-	var limit int
-
-	if role == "user" {
-		key = fmt.Sprintf("rate:user:%s", uid)
-		limit = config.Cfg.LimitUserRPM
-	} else {
-		key = fmt.Sprintf("rate:guest:%s", tempID)
-		limit = config.Cfg.LimitGuestRPM
-	}
-
-	count, err := redisClient.Client.Incr(redisClient.Ctx, key).Result()
-	if err != nil {
-		log.Printf("WARN rate_limit bypass due to redis error: uid=%q role=%q temp_id=%q key=%q err=%v", uid, role, tempID, key, err)
-		return true
-	}
-
-	if count == 1 {
-		if err := redisClient.Client.Expire(redisClient.Ctx, key, 60*time.Second).Err(); err != nil {
-			log.Printf("WARN rate_limit ttl set failed: uid=%q role=%q temp_id=%q key=%q err=%v", uid, role, tempID, key, err)
-		}
-	}
-
-	return count <= int64(limit)
 }
 
 func checkAuthRateLimit(clientIP string) bool {

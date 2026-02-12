@@ -13,6 +13,7 @@ type User struct {
 	DisplayName     sql.NullString `json:"display_name,omitempty"`
 	Status          string         `json:"status"`
 	Role            string         `json:"role"`
+	Tier            int            `json:"tier"`
 	RegisterIP      sql.NullString `json:"register_ip,omitempty"`
 	RequestCount    int64          `json:"request_count"`
 	LastLoginAt     sql.NullTime   `json:"last_login_at,omitempty"`

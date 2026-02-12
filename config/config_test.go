@@ -45,6 +45,9 @@ func TestLoad(t *testing.T) {
 		t.Setenv("NONCE_TTL_SECONDS", "40")
 		t.Setenv("LIMIT_GUEST_RPM", "15")
 		t.Setenv("LIMIT_USER_RPM", "25")
+		t.Setenv("LIMIT_TIER_1_RPM", "16")
+		t.Setenv("LIMIT_TIER_2_RPM", "26")
+		t.Setenv("LIMIT_TIER_3_RPM", "260")
 		t.Setenv("INIT_ALLOWED_EXTENSION_IDS", "ext-a, ext-b ,ext-c")
 
 		if err := Load(); err != nil {
@@ -62,6 +65,9 @@ func TestLoad(t *testing.T) {
 		}
 		if Cfg.TokenTTL.Seconds() != 120 || Cfg.TimestampTolerance.Seconds() != 30 || Cfg.NonceTTL.Seconds() != 40 {
 			t.Fatalf("unexpected TTL values: token=%v tolerance=%v nonce=%v", Cfg.TokenTTL, Cfg.TimestampTolerance, Cfg.NonceTTL)
+		}
+		if Cfg.LimitTier1RPM != 16 || Cfg.LimitTier2RPM != 26 || Cfg.LimitTier3RPM != 260 {
+			t.Fatalf("unexpected tier rpm values: t1=%d t2=%d t3=%d", Cfg.LimitTier1RPM, Cfg.LimitTier2RPM, Cfg.LimitTier3RPM)
 		}
 	})
 
