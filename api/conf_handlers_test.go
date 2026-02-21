@@ -98,15 +98,6 @@ func TestConfHandlers(t *testing.T) {
 		}
 	})
 
-	t.Run("Given guest role When putting conf Then returns 403", func(t *testing.T) {
-		confRepo = &fakeConfRepo{}
-		confIdentityResolver = &fakeIdentityResolver{}
-		w := executeConfRequest(t, http.MethodPut, "/api/business/conf/website_filters_text", `{"value":{"text":"a"}}`, "guest-1", "guest")
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("expected 403, got %d", w.Code)
-		}
-	})
-
 	t.Run("Given missing userId header When getting conf Then returns 403", func(t *testing.T) {
 		confRepo = &fakeConfRepo{}
 		confIdentityResolver = &fakeIdentityResolver{}
@@ -314,6 +305,32 @@ func TestConfHandlers(t *testing.T) {
 		w := executeConfRequest(t, http.MethodGet, "/api/business/conf/website_filters_text", "", "user-1", "user")
 		if w.Code != http.StatusInternalServerError {
 			t.Fatalf("expected 500, got %d", w.Code)
+		}
+	})
+
+	t.Run("Given resolver reports unbound identity When putting conf Then returns 403", func(t *testing.T) {
+		confIdentityResolver = &fakeIdentityResolver{
+			resolveFn: func(authUID string) (string, error) {
+				return "", repository.ErrAuthIdentityNotBoundToUser
+			},
+		}
+		confRepo = &fakeConfRepo{}
+		w := executeConfRequest(t, http.MethodPut, "/api/business/conf/website_filters_text", `{"value":{"text":"abc"}}`, "local_xxx", "user")
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d", w.Code)
+		}
+	})
+
+	t.Run("Given guest-like auth uid not bound in users When putting conf Then returns 403", func(t *testing.T) {
+		confIdentityResolver = &fakeIdentityResolver{
+			resolveFn: func(authUID string) (string, error) {
+				return "", repository.ErrAuthIdentityNotBoundToUser
+			},
+		}
+		confRepo = &fakeConfRepo{}
+		w := executeConfRequest(t, http.MethodPut, "/api/business/conf/website_filters_text", `{"value":{"text":"a"}}`, "temp-guest-uid", "guest")
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d", w.Code)
 		}
 	})
 }

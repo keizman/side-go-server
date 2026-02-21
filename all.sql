@@ -76,20 +76,6 @@ CREATE INDEX IF NOT EXISTS idx_users_tier ON users(tier);
 CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
 
 -- ============================================================
--- Auth Identity Mapping (auth uid -> persistent uzid)
--- ============================================================
-CREATE TABLE IF NOT EXISTS auth_identity_uzid (
-    id BIGSERIAL PRIMARY KEY,
-    identity_hash CHAR(64) NOT NULL UNIQUE,
-    uzid VARCHAR(36) NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_auth_identity_uzid_uzid ON auth_identity_uzid(uzid);
-CREATE INDEX IF NOT EXISTS idx_auth_identity_uzid_updated_at ON auth_identity_uzid(updated_at);
-
--- ============================================================
 -- User Conf Table (BUSINESS mode data sync)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS user_conf (
@@ -128,12 +114,6 @@ CREATE TRIGGER update_users_updated_at
 DROP TRIGGER IF EXISTS update_user_conf_updated_at ON user_conf;
 CREATE TRIGGER update_user_conf_updated_at
     BEFORE UPDATE ON user_conf
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_auth_identity_uzid_updated_at ON auth_identity_uzid;
-CREATE TRIGGER update_auth_identity_uzid_updated_at
-    BEFORE UPDATE ON auth_identity_uzid
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 

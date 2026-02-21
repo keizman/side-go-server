@@ -35,16 +35,11 @@ type upsertConfRequest struct {
 
 func GetConf(c *gin.Context) {
 	uid := strings.TrimSpace(c.GetString("verified_uid"))
-	role := strings.TrimSpace(c.GetString("verified_role"))
 	userID := strings.TrimSpace(c.GetHeader("x-user-id"))
 	key := strings.TrimSpace(c.Param("key"))
 
 	if uid == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
-		return
-	}
-	if role != "user" && role != "admin" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Cloud sync requires logged-in user"})
 		return
 	}
 	if userID == "" {
@@ -62,6 +57,10 @@ func GetConf(c *gin.Context) {
 
 	uzid, err := confIdentityResolver.ResolveOrCreateUZID(uid)
 	if err != nil {
+		if errors.Is(err, repository.ErrAuthIdentityNotBoundToUser) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Cloud sync requires registered account"})
+			return
+		}
 		log.Printf("ERROR conf resolve uzid failed: ip=%s auth_uid=%q key=%q err=%v", c.ClientIP(), uid, key, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve user storage id"})
 		return
@@ -94,16 +93,11 @@ func GetConf(c *gin.Context) {
 
 func PutConf(c *gin.Context) {
 	uid := strings.TrimSpace(c.GetString("verified_uid"))
-	role := strings.TrimSpace(c.GetString("verified_role"))
 	userID := strings.TrimSpace(c.GetHeader("x-user-id"))
 	key := strings.TrimSpace(c.Param("key"))
 
 	if uid == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
-		return
-	}
-	if role != "user" && role != "admin" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Cloud sync requires logged-in user"})
 		return
 	}
 	if userID == "" {
@@ -121,6 +115,10 @@ func PutConf(c *gin.Context) {
 
 	uzid, err := confIdentityResolver.ResolveOrCreateUZID(uid)
 	if err != nil {
+		if errors.Is(err, repository.ErrAuthIdentityNotBoundToUser) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Cloud sync requires registered account"})
+			return
+		}
 		log.Printf("ERROR conf resolve uzid failed: ip=%s auth_uid=%q key=%q err=%v", c.ClientIP(), uid, key, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve user storage id"})
 		return
