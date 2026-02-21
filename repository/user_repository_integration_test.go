@@ -72,6 +72,7 @@ func ensureUsersSchema() error {
 	fallback := `
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
+    uzid VARCHAR(36) NOT NULL UNIQUE DEFAULT md5(random()::text || clock_timestamp()::text),
     username VARCHAR(50) NOT NULL UNIQUE,
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
@@ -92,6 +93,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_uzid ON users(uzid);
 CREATE INDEX IF NOT EXISTS idx_users_tier ON users(tier);
 `
 	_, err = database.DB.Exec(fallback)

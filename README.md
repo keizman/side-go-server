@@ -6,7 +6,7 @@ Go 后端服务（实验阶段），用于浏览器扩展认证与业务接口�
 
 - 运行模式：
   - `AUTH`：签发与校验 Token（`/auth_token`、`/check_token`、`/api/register`）
-  - `BUSINESS`：业务接口与签名校验（`/api/login`、`/api/logout`、`/api/logout_all`、`/api/translate`、`/api/user/profile`）
+  - `BUSINESS`：云配置接口与签名校验（`/api/business/conf/:key`）
 - 关键模块：
   - `auth/`：token 生命周期、nonce、防重放、限流
   - `middleware/`：请求签名验证

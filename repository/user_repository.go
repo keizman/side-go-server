@@ -9,6 +9,7 @@ import (
 	"github.com/yourname/side-go-server/internal/database"
 	"github.com/yourname/side-go-server/models"
 
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -23,15 +24,19 @@ func (r *UserRepository) CreateUser(user *models.User, password string) error {
 	if err != nil {
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
+	if user.UZID == "" {
+		user.UZID = uuid.NewString()
+	}
 
 	query := `
-		INSERT INTO users (username, email, password_hash, display_name, role, tier, status, register_ip, request_count, email_verified)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		RETURNING id, created_at, updated_at
+		INSERT INTO users (uzid, username, email, password_hash, display_name, role, tier, status, register_ip, request_count, email_verified)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING id, uzid, created_at, updated_at
 	`
 
 	err = database.DB.QueryRow(
 		query,
+		user.UZID,
 		user.Username,
 		user.Email,
 		string(hashedPassword),
@@ -42,7 +47,7 @@ func (r *UserRepository) CreateUser(user *models.User, password string) error {
 		user.RegisterIP,
 		user.RequestCount,
 		user.EmailVerified,
-	).Scan(&user.ID, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.UZID, &user.CreatedAt, &user.UpdatedAt)
 
 	if err != nil {
 		return fmt.Errorf("failed to create user: %w", err)
@@ -54,7 +59,7 @@ func (r *UserRepository) CreateUser(user *models.User, password string) error {
 func (r *UserRepository) GetUserByUsername(username string) (*models.User, error) {
 	user := &models.User{}
 	query := `
-		SELECT id, username, email, password_hash, display_name, role, tier, status, 
+		SELECT id, uzid, username, email, password_hash, display_name, role, tier, status, 
 		       register_ip, request_count, last_login_at, last_login_ip,
 		       created_at, updated_at, email_verified, email_verified_at, deleted_at
 		FROM users
@@ -63,6 +68,7 @@ func (r *UserRepository) GetUserByUsername(username string) (*models.User, error
 
 	err := database.DB.QueryRow(query, username).Scan(
 		&user.ID,
+		&user.UZID,
 		&user.Username,
 		&user.Email,
 		&user.PasswordHash,
@@ -94,7 +100,7 @@ func (r *UserRepository) GetUserByUsername(username string) (*models.User, error
 func (r *UserRepository) GetUserByEmail(email string) (*models.User, error) {
 	user := &models.User{}
 	query := `
-		SELECT id, username, email, password_hash, display_name, role, tier, status, 
+		SELECT id, uzid, username, email, password_hash, display_name, role, tier, status, 
 		       register_ip, request_count, last_login_at, last_login_ip,
 		       created_at, updated_at, email_verified, email_verified_at, deleted_at
 		FROM users
@@ -103,6 +109,7 @@ func (r *UserRepository) GetUserByEmail(email string) (*models.User, error) {
 
 	err := database.DB.QueryRow(query, email).Scan(
 		&user.ID,
+		&user.UZID,
 		&user.Username,
 		&user.Email,
 		&user.PasswordHash,
@@ -134,7 +141,7 @@ func (r *UserRepository) GetUserByEmail(email string) (*models.User, error) {
 func (r *UserRepository) GetUserByUsernameOrEmail(usernameOrEmail string) (*models.User, error) {
 	user := &models.User{}
 	query := `
-		SELECT id, username, email, password_hash, display_name, role, tier, status, 
+		SELECT id, uzid, username, email, password_hash, display_name, role, tier, status, 
 		       register_ip, request_count, last_login_at, last_login_ip,
 		       created_at, updated_at, email_verified, email_verified_at, deleted_at
 		FROM users
@@ -143,6 +150,7 @@ func (r *UserRepository) GetUserByUsernameOrEmail(usernameOrEmail string) (*mode
 
 	err := database.DB.QueryRow(query, usernameOrEmail).Scan(
 		&user.ID,
+		&user.UZID,
 		&user.Username,
 		&user.Email,
 		&user.PasswordHash,
